@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Bubble Collapse",
+  "version": "1.0.0",
+  "description": "Collapse and expand ChatGPT conversation bubbles for better navigation in long threads",
+  
+  "permissions": [
+    "storage",
+    "tabs",
+    "menus"
+  ],
+  
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*"
+  ],
+  
+  "background": {
+    "scripts": ["background.js"]
+  },
+  
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*"
+      ],
+      "js": ["content-script.js"],
+      "css": ["content-styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  }
+}
