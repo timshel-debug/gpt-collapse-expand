@@ -1,0 +1,75 @@
+/* Styles for ChatGPT Bubble Collapse extension */
+/* All classes prefixed with cgcc- to avoid conflicts */
+
+/* Toggle button */
+.cgcc-toggle-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.05);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.2s, opacity 0.2s;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.cgcc-toggle-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.cgcc-toggle-btn:focus {
+  outline: 2px solid #0060df;
+  outline-offset: 2px;
+}
+
+/* Hover-only visibility mode */
+.cgcc-toggle-hover {
+  opacity: 0;
+  pointer-events: none;
+}
+
+*:hover > .cgcc-toggle-hover,
+*:focus-within > .cgcc-toggle-hover,
+.cgcc-toggle-hover:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Collapsed state fade affordance */
+.cgcc-collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.9));
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Ensure collapsed bubble has relative positioning for fade */
+.cgcc-collapsed {
+  position: relative;
+}
+
+/* Dark mode support for fade */
+@media (prefers-color-scheme: dark) {
+  .cgcc-collapsed::after {
+    background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.9));
+  }
+  
+  .cgcc-toggle-btn {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #fff;
+  }
+  
+  .cgcc-toggle-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+}

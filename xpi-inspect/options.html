@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ChatGPT Bubble Collapse - Options</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      max-width: 500px;
+    }
+    label {
+      display: block;
+      margin-top: 15px;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input, select {
+      width: 100%;
+      padding: 5px;
+      box-sizing: border-box;
+    }
+    button {
+      margin-top: 20px;
+      padding: 10px 20px;
+      background: #0060df;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #003eaa;
+    }
+    #status {
+      margin-top: 10px;
+      color: green;
+      display: none;
+    }
+    .description {
+      font-size: 0.9em;
+      color: #666;
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h1>ChatGPT Bubble Collapse Options</h1>
+  
+  <form id="optionsForm">
+    <label for="collapsedLines">Collapsed Lines:</label>
+    <input type="number" id="collapsedLines" name="collapsedLines" min="3" max="10" value="5">
+    <div class="description">Number of lines visible when a bubble is collapsed (3-10)</div>
+    
+    <label for="persistence">Persistence Mode:</label>
+    <select id="persistence" name="persistence">
+      <option value="off">Off - Don't save states</option>
+      <option value="conversationDefault">Conversation Default - Save overall mode only</option>
+      <option value="perBubble">Per Bubble - Save each bubble individually</option>
+    </select>
+    <div class="description">How collapse states are saved across page reloads</div>
+    
+    <label for="defaultMode">Default Mode for New Conversations:</label>
+    <select id="defaultMode" name="defaultMode">
+      <option value="expanded">Expanded</option>
+      <option value="collapsed">Collapsed</option>
+    </select>
+    <div class="description">Initial state when you open a new conversation</div>
+    
+    <button type="submit">Save</button>
+    <div id="status">Settings saved!</div>
+  </form>
+  
+  <script src="options.js"></script>
+</body>
+</html>

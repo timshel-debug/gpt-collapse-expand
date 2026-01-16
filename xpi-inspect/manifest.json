@@ -4,15 +4,6 @@
   "version": "1.0.0",
   "description": "Collapse and expand ChatGPT conversation bubbles for better navigation in long threads",
   
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "{b7f9c8e6-d3a2-4f1b-9e8a-c5d2f1a8e7b9}",
-      "data_collection_permissions": {
-        "required": ["none"]
-      }
-    }
-  },
-  
   "permissions": [
     "storage",
     "tabs",
