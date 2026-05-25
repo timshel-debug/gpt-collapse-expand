@@ -2,28 +2,67 @@
 // Handles DOM detection, bubble manipulation, and state management
 
 window.__CGCC_LOADED__ = true;
-console.log("[CGCC] content script loaded", location.href);
 
-(function() {
+(function () {
   'use strict';
 
-  // Configuration (will be loaded from storage)
-  const CONFIG = {
-    collapsedLines: 5,
-    buttonVisibility: 'hover', // 'hover' or 'always'
-    persistence: 'perBubble', // 'off' | 'conversationDefault' | 'perBubble'
-    defaultMode: 'expanded' // 'expanded' | 'collapsed'
+  // ─────────────────────────────────────────────
+  // Logging
+  // ─────────────────────────────────────────────
+  const TAG = '[CGCC]';
+  let debugEnabled = false;
+
+  const log = {
+    debug: (...a) => { if (debugEnabled) console.debug(TAG, ...a); },
+    info:  (...a) => console.log(TAG, ...a),
+    warn:  (...a) => console.warn(TAG, ...a),
+    error: (...a) => console.error(TAG, ...a),
   };
 
+  log.info('content script loaded', location.href);
+
+  // ─────────────────────────────────────────────
+  // Configuration
+  // ─────────────────────────────────────────────
+  const CONFIG = {
+    collapsedLines:   5,
+    buttonVisibility: 'hover',     // 'hover' | 'always'
+    persistence:      'perBubble', // 'off' | 'conversationDefault' | 'perBubble'
+    defaultMode:      'expanded',  // 'expanded' | 'collapsed'
+    jumpNavEnabled:   true,
+    jumpScrollBehavior: 'smooth',  // 'smooth' | 'instant'
+    debug:            false,
+  };
+
+  // ─────────────────────────────────────────────
   // State
-  let currentDefaultMode = 'expanded'; // 'expanded' or 'collapsed'
-  const bubbleControlsMap = new WeakMap(); // Maps bubble element to its control button
-  const bubbleDataMap = new WeakMap(); // Maps bubble element to its data (key, etc.)
-  let mutationObserver = null;
-  let debounceTimer = null;
-  let conversationKey = null;
-  let lastUrl = window.location.href;
-  let urlCheckInterval = null;
+  // NOTE: `let` (not `const`) is required so handleNavigation() can
+  // replace the WeakMaps when the user navigates to a new conversation.
+  // ─────────────────────────────────────────────
+  let currentDefaultMode = 'expanded';
+  let bubbleControlsMap  = new WeakMap(); // DOM element → toggle button
+  let bubbleDataMap      = new WeakMap(); // DOM element → { key: string }
+
+  // Per-session explicit user overrides, keyed by stable bubble key.
+  // Survives React re-renders that swap the underlying DOM element so
+  // that detectAndProcessBubbles() never overrides what the user chose.
+  const userExplicitStates = new Map(); // bubbleKey → 'expanded' | 'collapsed'
+
+  let mutationObserver  = null;
+  let debounceTimer     = null;
+  let processingLock    = false; // true while detectAndProcessBubbles is running
+  let processingPending = false; // a call was skipped while locked
+  let conversationKey   = null;
+  let lastUrl           = window.location.href;
+  let urlCheckInterval  = null;
+  let jumpNavContainer  = null;
+  let jumpNavListenersAttached = false;
+
+  const JUMP_NAV = {
+    verticalOffset: 90,
+    horizontalGap: 12,
+    topThreshold: 8,
+  };
 
   // Simple FNV-1a hash implementation (32-bit)
   function fnv1aHash(str) {
@@ -47,22 +86,15 @@ console.log("[CGCC] content script loaded", location.href);
 
   // Generate bubble key
   function generateBubbleKey(bubble, index) {
-    // Try to use data-message-id if available
-    const messageId = bubble.element.getAttribute('data-message-id');
-    if (messageId) {
-      return messageId;
-    }
+    // Prefer the stable server-assigned message ID (check container AND roleElement)
+    const messageId = bubble.element.getAttribute('data-message-id')
+      || bubble.roleElement.getAttribute('data-message-id');
+    if (messageId) return messageId;
 
-    // Otherwise, generate a stable-ish key
-    const role = bubble.role;
-    
-    // Get short text fingerprint (first 32 chars)
+    // Derive a key from role + position + content fingerprint
     const bodyEl = getBubbleBody(bubble);
-    const text = bodyEl.textContent.trim().substring(0, 32);
-    const textHash = fnv1aHash(text);
-
-    // Combine role, index, and text hash
-    return `${role}-${index}-${textHash}`;
+    const text   = bodyEl.textContent.trim().substring(0, 32);
+    return `${bubble.role}-${index}-${fnv1aHash(text)}`;
   }
 
   // Load settings from storage
@@ -71,29 +103,30 @@ console.log("[CGCC] content script loaded", location.href);
       const result = await browser.storage.local.get('settings');
       if (result.settings) {
         Object.assign(CONFIG, result.settings);
+        debugEnabled = !!CONFIG.debug;
+        log.debug('Settings loaded', CONFIG);
       }
-    } catch (error) {
-      console.error('Error loading settings:', error);
+    } catch (err) {
+      log.error('loadSettings failed', err);
     }
   }
 
   // Load conversation state from storage
   async function loadConversationState() {
     conversationKey = getConversationKey();
-    
+    log.debug('loadConversationState key=%s', conversationKey);
     try {
-      const result = await browser.storage.local.get('conversations');
+      const result        = await browser.storage.local.get('conversations');
       const conversations = result.conversations || {};
-      const convState = conversations[conversationKey];
-
+      const convState     = conversations[conversationKey];
       if (convState) {
         currentDefaultMode = convState.defaultMode || CONFIG.defaultMode;
+        log.debug('Conversation state found', convState);
         return convState;
       }
-    } catch (error) {
-      console.error('Error loading conversation state:', error);
+    } catch (err) {
+      log.error('loadConversationState failed', err);
     }
-
     currentDefaultMode = CONFIG.defaultMode;
     return null;
   }
@@ -101,22 +134,17 @@ console.log("[CGCC] content script loaded", location.href);
   // Save conversation state to storage
   async function saveConversationState(bubbleStates = null) {
     try {
-      const result = await browser.storage.local.get('conversations');
+      const result        = await browser.storage.local.get('conversations');
       const conversations = result.conversations || {};
-
-      const convState = {
-        defaultMode: currentDefaultMode,
-        updatedAt: Date.now()
-      };
-
+      const convState     = { defaultMode: currentDefaultMode, updatedAt: Date.now() };
       if (CONFIG.persistence === 'perBubble' && bubbleStates) {
         convState.bubbleStates = bubbleStates;
       }
-
       conversations[conversationKey] = convState;
       await browser.storage.local.set({ conversations });
-    } catch (error) {
-      console.error('Error saving conversation state:', error);
+      log.debug('Conversation state saved', convState);
+    } catch (err) {
+      log.error('saveConversationState failed', err);
     }
   }
 
@@ -140,9 +168,8 @@ console.log("[CGCC] content script loaded", location.href);
   async function init() {
     await loadSettings();
     const convState = await loadConversationState();
-    
-    injectStyles();
     await detectAndProcessBubbles(convState);
+    ensureJumpNavigator();
     setupMutationObserver();
     setupMessageListener();
     setupNavigationDetection();
@@ -176,22 +203,217 @@ console.log("[CGCC] content script loaded", location.href);
     }, 1000);
   }
 
-  // Handle navigation (conversation switch)
   async function handleNavigation() {
-    // Clear state
+    log.info('Navigation \u2192 %s', window.location.href);
+    // Reset all per-conversation state so no stale data bleeds across conversations
     bubbleControlsMap = new WeakMap();
-    bubbleDataMap = new WeakMap();
-
-    // Reload conversation state
+    bubbleDataMap     = new WeakMap();
+    userExplicitStates.clear();
+    processingLock    = false;
+    processingPending = false;
     const convState = await loadConversationState();
-
-    // Reprocess bubbles
     await detectAndProcessBubbles(convState);
+    ensureJumpNavigator();
+    updateJumpNavigatorPosition();
+    setupMutationObserver(); // re-attach to potentially new root
   }
 
-  // Inject CSS if not already injected
-  function injectStyles() {
-    // CSS is injected via manifest, but we can add dynamic styles if needed
+  function getSortedBubbleTargets() {
+    const root = getConversationRoot();
+    const roleElements = root.querySelectorAll('[data-message-author-role]');
+    const targets = [];
+    const seen = new Set();
+
+    for (const roleEl of roleElements) {
+      const role = roleEl.getAttribute('data-message-author-role');
+      if (role !== 'user' && role !== 'assistant') continue;
+      if (!document.contains(roleEl)) continue;
+
+      const rect = roleEl.getBoundingClientRect();
+      const top = rect.top + window.scrollY;
+
+      // Round to avoid near-identical duplicates from nested wrappers.
+      const topKey = String(Math.round(top));
+      if (seen.has(topKey)) continue;
+      seen.add(topKey);
+
+      targets.push({ top, element: roleEl });
+    }
+
+    // Fallback 1: use detected bubble containers if role markers are sparse.
+    if (targets.length < 2) {
+      const bubbles = detectBubbles();
+      for (const bubble of bubbles) {
+        const el = bubble.element;
+        if (!el || !document.contains(el)) continue;
+
+        const rect = el.getBoundingClientRect();
+        const top = rect.top + window.scrollY;
+        const topKey = String(Math.round(top));
+        if (seen.has(topKey)) continue;
+        seen.add(topKey);
+
+        targets.push({ top, element: el });
+      }
+    }
+
+    // Fallback 2: some ChatGPT variants expose turn wrappers via data-testid.
+    if (targets.length < 2) {
+      const turnWrappers = root.querySelectorAll('[data-testid*="conversation-turn"], [data-testid*="conversation_turn"]');
+      for (const turnEl of turnWrappers) {
+        if (!document.contains(turnEl)) continue;
+
+        const rect = turnEl.getBoundingClientRect();
+        const top = rect.top + window.scrollY;
+        const topKey = String(Math.round(top));
+        if (seen.has(topKey)) continue;
+        seen.add(topKey);
+
+        targets.push({ top, element: turnEl });
+      }
+    }
+
+    targets.sort((a, b) => a.top - b.top);
+    return targets;
+  }
+
+  function scrollToBubbleTop(targetTop) {
+    const scrollTop = Math.max(0, targetTop);
+    const behavior = CONFIG.jumpScrollBehavior === 'instant' ? 'auto' : 'smooth';
+    window.scrollTo({ top: scrollTop, behavior });
+  }
+
+  function scrollByViewport(direction) {
+    const behavior = CONFIG.jumpScrollBehavior === 'instant' ? 'auto' : 'smooth';
+    const viewportStep = Math.max(200, Math.round(window.innerHeight * 0.85));
+    window.scrollBy({ top: viewportStep * direction, behavior });
+  }
+
+  function removeJumpNavigator() {
+    if (jumpNavContainer && document.contains(jumpNavContainer)) {
+      jumpNavContainer.remove();
+    }
+    jumpNavContainer = null;
+  }
+
+  function navigateToPreviousBubble() {
+    const targets = getSortedBubbleTargets();
+    if (targets.length === 0) {
+      log.warn('navigateToPreviousBubble: no targets found, using viewport fallback');
+      scrollByViewport(-1);
+      return;
+    }
+
+    const currentY = window.scrollY;
+    const threshold = currentY - JUMP_NAV.topThreshold;
+    let previous = null;
+
+    for (const target of targets) {
+      if (target.top < threshold) previous = target;
+      else break;
+    }
+
+    if (previous) {
+      scrollToBubbleTop(previous.top);
+    } else {
+      scrollToBubbleTop(0);
+    }
+  }
+
+  function navigateToNextBubble() {
+    const targets = getSortedBubbleTargets();
+    if (targets.length === 0) {
+      log.warn('navigateToNextBubble: no targets found, using viewport fallback');
+      scrollByViewport(1);
+      return;
+    }
+
+    const currentY = window.scrollY;
+    const threshold = currentY + JUMP_NAV.topThreshold;
+    const next = targets.find((target) => target.top > threshold);
+
+    if (next) {
+      scrollToBubbleTop(next.top);
+      return;
+    }
+
+    // At the end of known targets, continue stepping down so button still has effect.
+    scrollByViewport(1);
+  }
+
+  function updateJumpNavigatorPosition() {
+    if (!jumpNavContainer || !document.contains(jumpNavContainer)) return;
+
+    const main = document.querySelector('main');
+    if (!main) {
+      jumpNavContainer.style.right = '12px';
+      jumpNavContainer.style.left = 'auto';
+      return;
+    }
+
+    const rect = main.getBoundingClientRect();
+    const navWidth = jumpNavContainer.offsetWidth || 44;
+    const desiredLeft = rect.right + JUMP_NAV.horizontalGap;
+    const maxLeft = window.innerWidth - navWidth - 12;
+    const minLeft = 12;
+    const clampedLeft = Math.min(maxLeft, Math.max(minLeft, desiredLeft));
+
+    jumpNavContainer.style.left = `${Math.round(clampedLeft)}px`;
+    jumpNavContainer.style.right = 'auto';
+  }
+
+  function ensureJumpNavigator() {
+    if (!CONFIG.jumpNavEnabled) {
+      removeJumpNavigator();
+      return;
+    }
+
+    if (jumpNavContainer && document.contains(jumpNavContainer)) {
+      return;
+    }
+
+    jumpNavContainer = document.createElement('div');
+    jumpNavContainer.className = 'cgcc-jump-nav';
+    jumpNavContainer.setAttribute('role', 'group');
+    jumpNavContainer.setAttribute('aria-label', 'Message navigation');
+
+    const upButton = document.createElement('button');
+    upButton.className = 'cgcc-jump-btn';
+    upButton.setAttribute('type', 'button');
+    upButton.setAttribute('aria-label', 'Jump to previous message');
+    upButton.textContent = '\u2191';
+
+    const downButton = document.createElement('button');
+    downButton.className = 'cgcc-jump-btn';
+    downButton.setAttribute('type', 'button');
+    downButton.setAttribute('aria-label', 'Jump to next message');
+    downButton.textContent = '\u2193';
+
+    upButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      navigateToPreviousBubble();
+    });
+
+    downButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      navigateToNextBubble();
+    });
+
+    jumpNavContainer.appendChild(upButton);
+    jumpNavContainer.appendChild(downButton);
+    document.body.appendChild(jumpNavContainer);
+
+    jumpNavContainer.style.top = `${JUMP_NAV.verticalOffset}px`;
+
+    if (!jumpNavListenersAttached) {
+      window.addEventListener('resize', updateJumpNavigatorPosition, { passive: true });
+      window.addEventListener('scroll', updateJumpNavigatorPosition, { passive: true });
+      jumpNavListenersAttached = true;
+    }
+
+    updateJumpNavigatorPosition();
   }
 
   // Detect conversation root
@@ -203,41 +425,68 @@ console.log("[CGCC] content script loaded", location.href);
     return document.body;
   }
 
-  // Detect all message bubbles
+  /**
+   * Detect all message bubbles and return them as { element, role, roleElement }.
+   *
+   * Container selection uses a stable, height-independent strategy:
+   *   1. Walk up to the nearest ancestor with `data-message-id` — the most stable
+   *      ChatGPT marker, fixed at message creation and unchanged during streaming.
+   *   2. Walk up (max 8 levels) to the nearest ancestor with class `group`.
+   *   3. Fall back to the roleElement itself.
+   *
+   * Results are deduplicated by container element so that multiple roleElements
+   * inside the same container (e.g. thinking-block + response text) produce only
+   * ONE bubble — eliminating the duplicate-button problem.
+   */
   function detectBubbles() {
-    const root = getConversationRoot();
-    const bubbles = [];
-
-    // Strategy 1: Look for data-message-author-role attributes (preferred)
+    const root         = getConversationRoot();
+    const seen         = new Set();
+    const bubbles      = [];
     const roleElements = root.querySelectorAll('[data-message-author-role]');
-    
+
+    log.debug('detectBubbles: %d role elements in DOM', roleElements.length);
+
     for (const roleEl of roleElements) {
       const role = roleEl.getAttribute('data-message-author-role');
-      if (role === 'user' || role === 'assistant') {
-        // Find the bubble container - we want a stable ancestor
-        // The roleEl itself or a close ancestor is typically the bubble container
-        let bubbleContainer = roleEl;
-        
-        // If roleEl is very small, look for a larger ancestor
-        // Heuristic: find the ancestor that contains the full message content
-        while (bubbleContainer.parentElement && 
-               bubbleContainer.parentElement !== root &&
-               !bubbleContainer.classList.contains('group') && // Common ChatGPT class
-               bubbleContainer.offsetHeight < 50) {
-          bubbleContainer = bubbleContainer.parentElement;
-        }
+      if (role !== 'user' && role !== 'assistant') continue;
 
-        bubbles.push({
-          element: bubbleContainer,
-          role: role,
-          roleElement: roleEl
-        });
+      let container = roleEl;
+
+      // Strategy 1: anchor to data-message-id (stable across streaming)
+      let el = roleEl;
+      while (el && el !== root) {
+        if (el.hasAttribute('data-message-id')) {
+          container = el;
+          break;
+        }
+        el = el.parentElement;
       }
+
+      // Strategy 2: anchor to .group ancestor (only if strategy 1 failed)
+      if (container === roleEl) {
+        el = roleEl.parentElement;
+        let depth = 0;
+        while (el && el !== root && depth < 8) {
+          if (el.classList.contains('group')) {
+            container = el;
+            break;
+          }
+          el = el.parentElement;
+          depth++;
+        }
+      }
+
+      // Skip duplicates (multiple roleElements resolving to the same container)
+      if (seen.has(container)) {
+        log.debug('detectBubbles: deduplicated container for role=%s', role);
+        continue;
+      }
+      seen.add(container);
+
+      bubbles.push({ element: container, role, roleElement: roleEl });
     }
 
-    // If no bubbles found with preferred method, fail-safe: do nothing
-    // We won't attempt risky heuristics
-    
+    log.debug('detectBubbles: returning %d unique bubbles', bubbles.length);
     return bubbles;
   }
 
@@ -275,22 +524,18 @@ console.log("[CGCC] content script loaded", location.href);
     try {
       const bodyEl = getBubbleBody(bubble);
       if (!bodyEl || !document.contains(bodyEl)) return;
-
-      const maxHeight = computeCollapsedHeight(bodyEl);
-
-      bodyEl.style.maxHeight = `${maxHeight}px`;
-      bodyEl.style.overflow = 'hidden';
+      const maxH = computeCollapsedHeight(bodyEl);
+      bodyEl.style.maxHeight = `${maxH}px`;
+      bodyEl.style.overflow  = 'hidden';
       bubble.element.classList.add('cgcc-collapsed');
-
-      // Update button text
-      const button = bubbleControlsMap.get(bubble.element);
-      if (button) {
-        button.textContent = 'Expand';
-        button.setAttribute('aria-label', 'Expand message');
+      const btn = bubbleControlsMap.get(bubble.element);
+      if (btn) {
+        btn.textContent = 'Expand';
+        btn.setAttribute('aria-label', 'Expand message');
       }
-    } catch (error) {
-      // Defensive: fail silently
-      console.warn('Failed to collapse bubble:', error);
+      log.debug('collapseBubble key=%s', bubbleDataMap.get(bubble.element)?.key);
+    } catch (err) {
+      log.warn('collapseBubble error', err);
     }
   }
 
@@ -299,20 +544,17 @@ console.log("[CGCC] content script loaded", location.href);
     try {
       const bodyEl = getBubbleBody(bubble);
       if (!bodyEl || !document.contains(bodyEl)) return;
-      
       bodyEl.style.maxHeight = '';
-      bodyEl.style.overflow = '';
+      bodyEl.style.overflow  = '';
       bubble.element.classList.remove('cgcc-collapsed');
-
-      // Update button text
-      const button = bubbleControlsMap.get(bubble.element);
-      if (button) {
-        button.textContent = 'Collapse';
-        button.setAttribute('aria-label', 'Collapse message');
+      const btn = bubbleControlsMap.get(bubble.element);
+      if (btn) {
+        btn.textContent = 'Collapse';
+        btn.setAttribute('aria-label', 'Collapse message');
       }
-    } catch (error) {
-      // Defensive: fail silently
-      console.warn('Failed to expand bubble:', error);
+      log.debug('expandBubble key=%s', bubbleDataMap.get(bubble.element)?.key);
+    } catch (err) {
+      log.warn('expandBubble error', err);
     }
   }
 
@@ -323,32 +565,40 @@ console.log("[CGCC] content script loaded", location.href);
 
   // Toggle a bubble's collapse state
   function toggleBubble(bubble) {
-    if (isBubbleCollapsed(bubble)) {
+    const wasCollapsed = isBubbleCollapsed(bubble);
+    if (wasCollapsed) {
       expandBubble(bubble);
     } else {
       collapseBubble(bubble);
     }
 
-    // Save state if persistence is enabled
+    // Record explicit user intent keyed by stable bubble key.
+    // This prevents detectAndProcessBubbles() from overriding the user's
+    // choice when React re-renders the message DOM during streaming.
+    const data = bubbleDataMap.get(bubble.element);
+    if (data) {
+      const newState = wasCollapsed ? 'expanded' : 'collapsed';
+      userExplicitStates.set(data.key, newState);
+      log.debug('User toggled %s \u2192 %s', data.key, newState);
+    }
+
     if (CONFIG.persistence !== 'off') {
-      const bubbleStates = CONFIG.persistence === 'perBubble' ? getAllBubbleStates() : null;
-      saveConversationState(bubbleStates);
+      const states = CONFIG.persistence === 'perBubble' ? getAllBubbleStates() : null;
+      saveConversationState(states);
     }
   }
 
   // Add toggle control to a bubble
   function addToggleControl(bubble) {
-    // Check if control already exists (defensive: prevent duplicates)
     if (bubbleControlsMap.has(bubble.element)) {
+      log.debug('addToggleControl: button already present, skipping');
       return;
     }
-
-    // Defensive: ensure element is still in DOM
     if (!document.contains(bubble.element)) {
+      log.debug('addToggleControl: element not in DOM, skipping');
       return;
     }
 
-    // Create button
     const button = document.createElement('button');
     button.className = 'cgcc-toggle-btn';
     button.textContent = 'Collapse';
@@ -356,18 +606,15 @@ console.log("[CGCC] content script loaded", location.href);
     button.setAttribute('type', 'button');
     button.setAttribute('tabindex', '0');
 
-    // Apply visibility mode
     if (CONFIG.buttonVisibility === 'hover') {
       button.classList.add('cgcc-toggle-hover');
     }
 
-    // Event listeners
     button.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       toggleBubble(bubble);
     });
-
     button.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
@@ -376,144 +623,143 @@ console.log("[CGCC] content script loaded", location.href);
       }
     });
 
-    // Add to bubble
     try {
       bubble.element.style.position = 'relative';
       bubble.element.appendChild(button);
-
-      // Store in map
       bubbleControlsMap.set(bubble.element, button);
-    } catch (error) {
-      // Defensive: fail silently if DOM operation fails
-      console.warn('Failed to add toggle control:', error);
+      log.debug('addToggleControl: button added for key=%s', bubbleDataMap.get(bubble.element)?.key);
+    } catch (err) {
+      log.warn('addToggleControl DOM error', err);
     }
+  }
+
+  /**
+   * Determine whether a newly-seen bubble should start collapsed.
+   * Priority (highest → lowest):
+   *   1. Explicit user action this session (userExplicitStates)
+   *   2. Persisted per-bubble state from storage
+   *   3. Conversation default mode
+   */
+  function resolveInitialState(bubbleKey, convState) {
+    const explicit = userExplicitStates.get(bubbleKey);
+    if (explicit !== undefined) {
+      log.debug('resolveInitialState %s \u2192 explicit:%s', bubbleKey, explicit);
+      return explicit === 'collapsed';
+    }
+    if (CONFIG.persistence === 'perBubble' && convState && convState.bubbleStates) {
+      const saved = convState.bubbleStates[bubbleKey];
+      if (saved !== undefined) {
+        log.debug('resolveInitialState %s \u2192 persisted:%s', bubbleKey, saved);
+        return saved === 'collapsed';
+      }
+    }
+    log.debug('resolveInitialState %s \u2192 default:%s', bubbleKey, currentDefaultMode);
+    return currentDefaultMode === 'collapsed';
   }
 
   // Process all detected bubbles
   async function detectAndProcessBubbles(convState = null) {
-    const bubbles = detectBubbles();
-
-    // Load conversation state if not provided
-    if (!convState) {
-      convState = await loadConversationState();
+    if (processingLock) {
+      processingPending = true;
+      log.debug('detectAndProcessBubbles: locked \u2014 queuing pending pass');
+      return;
     }
+    processingLock    = true;
+    processingPending = false;
 
-    for (let i = 0; i < bubbles.length; i++) {
-      const bubble = bubbles[i];
-      
-      // Generate and store bubble key
-      const bubbleKey = generateBubbleKey(bubble, i);
-      let bubbleData = bubbleDataMap.get(bubble.element);
-      if (!bubbleData) {
-        bubbleData = { key: bubbleKey };
-        bubbleDataMap.set(bubble.element, bubbleData);
+    try {
+      if (!convState) {
+        convState = await loadConversationState();
       }
+      const bubbles = detectBubbles();
+      log.debug('detectAndProcessBubbles: %d bubbles to process', bubbles.length);
 
-      // Add toggle control if not present
-      const isNewBubble = !bubbleControlsMap.has(bubble.element);
-      addToggleControl(bubble);
+      for (let i = 0; i < bubbles.length; i++) {
+        const bubble = bubbles[i];
+        let data = bubbleDataMap.get(bubble.element);
+        if (!data) {
+          const key = generateBubbleKey(bubble, i);
+          data = { key };
+          bubbleDataMap.set(bubble.element, data);
+          log.debug('New bubble registered key=%s', key);
+        }
 
-      // Apply state to new bubbles
-      if (isNewBubble) {
-        let shouldCollapse = false;
+        const isNew = !bubbleControlsMap.has(bubble.element);
+        addToggleControl(bubble);
 
-        if (CONFIG.persistence === 'perBubble' && convState && convState.bubbleStates) {
-          // Use per-bubble state
-          const savedState = convState.bubbleStates[bubbleKey];
-          if (savedState === 'collapsed') {
-            shouldCollapse = true;
-          } else if (savedState === 'expanded') {
-            shouldCollapse = false;
-          } else {
-            // No saved state for this bubble, use default
-            shouldCollapse = currentDefaultMode === 'collapsed';
+        if (isNew) {
+          const shouldCollapse = resolveInitialState(data.key, convState);
+          log.info('Initial state key=%s \u2192 %s', data.key, shouldCollapse ? 'collapsed' : 'expanded');
+          if (shouldCollapse) {
+            collapseBubble(bubble);
           }
-        } else {
-          // Use conversation default mode
-          shouldCollapse = currentDefaultMode === 'collapsed';
         }
-
-        if (shouldCollapse) {
-          collapseBubble(bubble);
-        }
+      }
+    } finally {
+      processingLock = false;
+      // If a call was skipped while locked, run one more pass now
+      if (processingPending) {
+        processingPending = false;
+        log.debug('detectAndProcessBubbles: running pending pass');
+        setTimeout(() => detectAndProcessBubbles(), 0);
       }
     }
   }
 
   // Debounced mutation handler
-  function handleMutations() {
+  function handleMutations(mutations) {
+    // Only react to node additions; attribute/style mutations don't need reprocessing
+    const hasNewNodes = mutations.some(m => m.addedNodes.length > 0);
+    if (!hasNewNodes) return;
+
     clearTimeout(debounceTimer);
+    // 200 ms gives streaming content time to settle so we don't see rapidly
+    // changing container heights producing duplicate detections mid-stream.
     debounceTimer = setTimeout(() => {
+      log.debug('MutationObserver: debounce fired');
       detectAndProcessBubbles();
-    }, 50);
+    }, 200);
   }
 
   // Setup MutationObserver
   function setupMutationObserver() {
-    const root = getConversationRoot();
-
     if (mutationObserver) {
       mutationObserver.disconnect();
     }
-
-    mutationObserver = new MutationObserver((mutations) => {
-      // Defensive: limit processing to prevent infinite loops
-      if (mutations.length > 1000) {
-        console.warn('Too many mutations, skipping batch');
-        return;
-      }
-
-      // Check if there are new nodes
-      let hasNewNodes = false;
-      for (const mutation of mutations) {
-        if (mutation.addedNodes.length > 0) {
-          hasNewNodes = true;
-          break;
-        }
-      }
-
-      if (hasNewNodes) {
-        handleMutations();
-      }
-    });
-
+    const root = getConversationRoot();
+    mutationObserver = new MutationObserver(handleMutations);
     try {
-      mutationObserver.observe(root, {
-        childList: true,
-        subtree: true
-      });
-    } catch (error) {
-      console.error('Failed to setup MutationObserver:', error);
+      mutationObserver.observe(root, { childList: true, subtree: true });
+      log.debug('MutationObserver attached to <%s>', root.tagName);
+    } catch (err) {
+      log.error('setupMutationObserver failed', err);
     }
   }
 
   // Handle commands from background script
   function setupMessageListener() {
     browser.runtime.onMessage.addListener((message) => {
+      log.info('Background message: %s', message.type);
+
       if (message.type === 'COLLAPSE_ALL') {
         currentDefaultMode = 'collapsed';
-        const bubbles = detectBubbles();
-        for (const bubble of bubbles) {
-          collapseBubble(bubble);
-        }
-        
-        // Save state
-        if (CONFIG.persistence !== 'off') {
-          const bubbleStates = CONFIG.persistence === 'perBubble' ? getAllBubbleStates() : null;
-          saveConversationState(bubbleStates);
-        }
+        detectBubbles().forEach((b) => {
+          collapseBubble(b);
+          const d = bubbleDataMap.get(b.element);
+          if (d) userExplicitStates.set(d.key, 'collapsed');
+        });
       } else if (message.type === 'EXPAND_ALL') {
         currentDefaultMode = 'expanded';
-        const bubbles = detectBubbles();
-        for (const bubble of bubbles) {
-          expandBubble(bubble);
-        }
-        
-        // Save state
-        if (CONFIG.persistence !== 'off') {
-          const bubbleStates = CONFIG.persistence === 'perBubble' ? getAllBubbleStates() : null;
-          saveConversationState(bubbleStates);
-        }
+        detectBubbles().forEach((b) => {
+          expandBubble(b);
+          const d = bubbleDataMap.get(b.element);
+          if (d) userExplicitStates.set(d.key, 'expanded');
+        });
+      }
+
+      if (CONFIG.persistence !== 'off') {
+        const states = CONFIG.persistence === 'perBubble' ? getAllBubbleStates() : null;
+        saveConversationState(states);
       }
     });
   }

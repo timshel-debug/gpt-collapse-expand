@@ -66,7 +66,26 @@
       <option value="collapsed">Collapsed</option>
     </select>
     <div class="description">Initial state when you open a new conversation</div>
-    
+
+    <label for="jumpNavEnabled" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+      <input type="checkbox" id="jumpNavEnabled" name="jumpNavEnabled">
+      Show right-side message navigator buttons
+    </label>
+    <div class="description">Shows Up/Down buttons on ChatGPT pages for message-by-message navigation</div>
+
+    <label for="jumpScrollBehavior">Navigator Scroll Behavior:</label>
+    <select id="jumpScrollBehavior" name="jumpScrollBehavior">
+      <option value="smooth">Smooth jump</option>
+      <option value="instant">Instant jump</option>
+    </select>
+    <div class="description">Controls whether Up/Down navigation animates or jumps instantly</div>
+
+    <label for="debug" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+      <input type="checkbox" id="debug" name="debug">
+      Enable debug logging
+    </label>
+    <div class="description">Logs detailed trace information to the browser console under the [CGCC] prefix</div>
+
     <button type="submit">Save</button>
     <div id="status">Settings saved!</div>
   </form>

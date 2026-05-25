@@ -5,7 +5,10 @@ const DEFAULT_SETTINGS = {
   collapsedLines: 5,
   buttonVisibility: 'hover',
   persistence: 'perBubble',
-  defaultMode: 'expanded'
+  defaultMode: 'expanded',
+  jumpNavEnabled: true,
+  jumpScrollBehavior: 'smooth',
+  debug: false
 };
 
 // Load settings from storage and populate form
@@ -18,6 +21,9 @@ async function loadSettings() {
     document.getElementById('collapsedLines').value = settings.collapsedLines || 5;
     document.getElementById('persistence').value = settings.persistence || 'perBubble';
     document.getElementById('defaultMode').value = settings.defaultMode || 'expanded';
+    document.getElementById('jumpNavEnabled').checked = settings.jumpNavEnabled !== false;
+    document.getElementById('jumpScrollBehavior').value = settings.jumpScrollBehavior || 'smooth';
+    document.getElementById('debug').checked = !!settings.debug;
   } catch (error) {
     console.error('Error loading settings:', error);
   }
@@ -31,6 +37,8 @@ async function saveSettings(e) {
   const collapsedLines = parseInt(document.getElementById('collapsedLines').value, 10);
   const persistence = document.getElementById('persistence').value;
   const defaultMode = document.getElementById('defaultMode').value;
+  const jumpNavEnabled = document.getElementById('jumpNavEnabled').checked;
+  const jumpScrollBehavior = document.getElementById('jumpScrollBehavior').value;
 
   // Validate
   if (collapsedLines < 3 || collapsedLines > 10) {
@@ -38,12 +46,17 @@ async function saveSettings(e) {
     return;
   }
 
+  const debug = document.getElementById('debug').checked;
+
   // Build settings object
   const settings = {
     collapsedLines,
     buttonVisibility: 'hover', // Not exposed in UI yet
     persistence,
-    defaultMode
+    defaultMode,
+    jumpNavEnabled,
+    jumpScrollBehavior,
+    debug
   };
 
   try {
