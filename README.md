@@ -105,6 +105,22 @@ The extension will be active until you close Firefox or remove it.
 - [ ] Test with messages containing images or tables
   - [ ] Verify collapse doesn't cause horizontal overflow
 
+#### 11. Message Navigator Test (Up/Down)
+- [ ] Open a long conversation on https://chatgpt.com/
+- [ ] Verify right-side `.cgcc-jump-nav` is visible with Up/Down buttons
+- [ ] Click Down from near the top of the conversation
+- [ ] Verify viewport moves to the next user/assistant message top
+- [ ] Click Down repeatedly
+- [ ] Verify each click advances to the next message/turn
+- [ ] Click Up from the middle or lower part of the conversation
+- [ ] Verify viewport moves to the previous user/assistant message top
+- [ ] Open extension options and disable navigator visibility
+- [ ] Reload ChatGPT page and verify `.cgcc-jump-nav` is hidden
+- [ ] Re-enable navigator visibility and reload
+- [ ] Verify `.cgcc-jump-nav` returns
+- [ ] Set scroll behavior to `smooth` and verify animated movement
+- [ ] Set scroll behavior to `instant` and verify immediate movement
+
 ### Expected Behavior Summary:
 - Toggle buttons should appear on hover (unless changed in settings)
 - Collapsed bubbles show approximately 5 lines (or configured amount)
