@@ -218,75 +218,208 @@ window.__CGCC_LOADED__ = true;
     setupMutationObserver(); // re-attach to potentially new root
   }
 
-  function getSortedBubbleTargets() {
-    const root = getConversationRoot();
-    const roleElements = root.querySelectorAll('[data-message-author-role]');
-    const targets = [];
+  function isDocumentScroller(scroller) {
+    return (
+      !scroller
+      || scroller === window
+      || scroller === document
+      || scroller === document.documentElement
+      || scroller === document.body
+      || scroller === document.scrollingElement
+    );
+  }
+
+  function getScrollTop(scroller) {
+    if (isDocumentScroller(scroller)) {
+      return window.scrollY
+        || document.documentElement.scrollTop
+        || document.body.scrollTop
+        || 0;
+    }
+    return scroller.scrollTop || 0;
+  }
+
+  function getScrollBehavior() {
+    return CONFIG.jumpScrollBehavior === 'instant' ? 'auto' : 'smooth';
+  }
+
+  function scrollToPosition(scroller, top, behavior) {
+    const safeTop = Math.max(0, Math.round(top));
+    if (isDocumentScroller(scroller)) {
+      window.scrollTo({ top: safeTop, behavior });
+      return;
+    }
+    scroller.scrollTo({ top: safeTop, behavior });
+  }
+
+  function scrollByPosition(scroller, delta, behavior) {
+    const safeDelta = Math.round(delta);
+    if (isDocumentScroller(scroller)) {
+      window.scrollBy({ top: safeDelta, behavior });
+      return;
+    }
+    scroller.scrollBy({ top: safeDelta, behavior });
+  }
+
+  function getScrollerLabel(scroller) {
+    if (isDocumentScroller(scroller)) return 'document';
+    const tag = scroller.tagName ? scroller.tagName.toLowerCase() : 'unknown';
+    const id = scroller.id ? `#${scroller.id}` : '';
+    const classPart = scroller.className && typeof scroller.className === 'string'
+      ? `.${scroller.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.')}`
+      : '';
+    return `${tag}${id}${classPart}`;
+  }
+
+  function isScrollableElement(el) {
+    if (!el || !el.tagName) return false;
+    const style = window.getComputedStyle(el);
+    const overflowY = style.overflowY;
+    const allowsScroll = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay';
+    const hasRange = el.scrollHeight > (el.clientHeight + 50);
+    return allowsScroll && hasRange;
+  }
+
+  function getMessageAnchorElements(root) {
+    const anchors = [];
     const seen = new Set();
 
+    const roleElements = root.querySelectorAll('[data-message-author-role]');
     for (const roleEl of roleElements) {
       const role = roleEl.getAttribute('data-message-author-role');
       if (role !== 'user' && role !== 'assistant') continue;
-      if (!document.contains(roleEl)) continue;
-
-      const rect = roleEl.getBoundingClientRect();
-      const top = rect.top + window.scrollY;
-
-      // Round to avoid near-identical duplicates from nested wrappers.
-      const topKey = String(Math.round(top));
-      if (seen.has(topKey)) continue;
-      seen.add(topKey);
-
-      targets.push({ top, element: roleEl });
+      if (!document.contains(roleEl) || seen.has(roleEl)) continue;
+      seen.add(roleEl);
+      anchors.push(roleEl);
     }
 
-    // Fallback 1: use detected bubble containers if role markers are sparse.
-    if (targets.length < 2) {
-      const bubbles = detectBubbles();
-      for (const bubble of bubbles) {
+    if (anchors.length < 2) {
+      for (const bubble of detectBubbles()) {
         const el = bubble.element;
-        if (!el || !document.contains(el)) continue;
-
-        const rect = el.getBoundingClientRect();
-        const top = rect.top + window.scrollY;
-        const topKey = String(Math.round(top));
-        if (seen.has(topKey)) continue;
-        seen.add(topKey);
-
-        targets.push({ top, element: el });
+        if (!el || !document.contains(el) || seen.has(el)) continue;
+        seen.add(el);
+        anchors.push(el);
       }
     }
 
-    // Fallback 2: some ChatGPT variants expose turn wrappers via data-testid.
-    if (targets.length < 2) {
+    if (anchors.length < 2) {
       const turnWrappers = root.querySelectorAll('[data-testid*="conversation-turn"], [data-testid*="conversation_turn"]');
       for (const turnEl of turnWrappers) {
-        if (!document.contains(turnEl)) continue;
-
-        const rect = turnEl.getBoundingClientRect();
-        const top = rect.top + window.scrollY;
-        const topKey = String(Math.round(top));
-        if (seen.has(topKey)) continue;
-        seen.add(topKey);
-
-        targets.push({ top, element: turnEl });
+        if (!document.contains(turnEl) || seen.has(turnEl)) continue;
+        seen.add(turnEl);
+        anchors.push(turnEl);
       }
     }
 
-    targets.sort((a, b) => a.top - b.top);
+    return anchors;
+  }
+
+  function getScrollableAncestors(el, root) {
+    const result = [];
+    let current = el;
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (current === root || current.contains(root) || root.contains(current)) {
+        result.push(current);
+      }
+      current = current.parentElement;
+    }
+    return result;
+  }
+
+  function getActiveScrollContainer() {
+    const root = getConversationRoot();
+    const anchors = getMessageAnchorElements(root);
+    const candidates = new Set();
+
+    candidates.add(document.scrollingElement);
+    candidates.add(document.documentElement);
+    candidates.add(document.body);
+
+    const main = document.querySelector('main');
+    if (main) candidates.add(main);
+
+    for (const anchor of anchors) {
+      const ancestors = getScrollableAncestors(anchor, root);
+      for (const ancestor of ancestors) {
+        if (isScrollableElement(ancestor)) {
+          candidates.add(ancestor);
+        }
+      }
+    }
+
+    const wrapperCandidates = root.querySelectorAll('[data-testid*="conversation-turn"], [data-testid*="conversation_turn"], [class*="conversation"], [class*="thread"]');
+    for (const node of wrapperCandidates) {
+      if (isScrollableElement(node)) {
+        candidates.add(node);
+      }
+      for (const ancestor of getScrollableAncestors(node, root)) {
+        if (isScrollableElement(ancestor)) {
+          candidates.add(ancestor);
+        }
+      }
+    }
+
+    let best = document.scrollingElement || document.documentElement;
+    let bestScore = -1;
+
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+
+      const isDoc = isDocumentScroller(candidate);
+      const scrollRange = isDoc
+        ? Math.max(0, (document.scrollingElement?.scrollHeight || document.documentElement.scrollHeight || 0) - window.innerHeight)
+        : Math.max(0, candidate.scrollHeight - candidate.clientHeight);
+      if (scrollRange <= 0) continue;
+
+      const containsAnchor = anchors.length === 0
+        ? true
+        : anchors.some((anchor) => isDoc || candidate.contains(anchor));
+
+      const score = (containsAnchor ? 1_000_000 : 0) + scrollRange;
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+
+    return best || document.scrollingElement || document.documentElement;
+  }
+
+  // Returns bubble parent elements in visual top-to-bottom order,
+  // using the injected .cgcc-toggle-btn buttons as reliable anchors.
+  function getSortedBubbleTargets() {
+    const buttons = Array.from(document.querySelectorAll('.cgcc-toggle-btn'));
+    const seen = new Set();
+    const targets = [];
+
+    for (const btn of buttons) {
+      const bubble = btn.parentElement;
+      if (!bubble || !document.contains(bubble) || seen.has(bubble)) continue;
+      seen.add(bubble);
+      // viewportTop: top of the bubble relative to viewport at this moment.
+      // We store the element and recompute viewportTop at scroll time so it
+      // is always current (avoids stale values from before scroll).
+      targets.push({ element: bubble, viewportTop: bubble.getBoundingClientRect().top });
+    }
+
+    // DOM order is already top-to-bottom; sort by viewportTop to be safe.
+    targets.sort((a, b) => a.viewportTop - b.viewportTop);
+    log.debug('getSortedBubbleTargets: %d targets', targets.length);
     return targets;
   }
 
-  function scrollToBubbleTop(targetTop) {
-    const scrollTop = Math.max(0, targetTop);
-    const behavior = CONFIG.jumpScrollBehavior === 'instant' ? 'auto' : 'smooth';
-    window.scrollTo({ top: scrollTop, behavior });
+  function scrollToBubbleTop(scroller, targetTop) {
+    const behavior = getScrollBehavior();
+    scrollToPosition(scroller, targetTop, behavior);
   }
 
-  function scrollByViewport(direction) {
-    const behavior = CONFIG.jumpScrollBehavior === 'instant' ? 'auto' : 'smooth';
-    const viewportStep = Math.max(200, Math.round(window.innerHeight * 0.85));
-    window.scrollBy({ top: viewportStep * direction, behavior });
+  function scrollByViewport(scroller, direction) {
+    const behavior = getScrollBehavior();
+    const viewportHeight = isDocumentScroller(scroller)
+      ? window.innerHeight
+      : scroller.clientHeight;
+    const viewportStep = Math.max(200, Math.round(viewportHeight * 0.85));
+    scrollByPosition(scroller, viewportStep * direction, behavior);
   }
 
   function removeJumpNavigator() {
@@ -298,47 +431,51 @@ window.__CGCC_LOADED__ = true;
 
   function navigateToPreviousBubble() {
     const targets = getSortedBubbleTargets();
+    log.debug('jump-up click targets=%d', targets.length);
+
     if (targets.length === 0) {
-      log.warn('navigateToPreviousBubble: no targets found, using viewport fallback');
-      scrollByViewport(-1);
+      log.warn('jump-up: no toggle buttons found');
       return;
     }
 
-    const currentY = window.scrollY;
-    const threshold = currentY - JUMP_NAV.topThreshold;
+    // Find the last bubble whose top is meaningfully above the viewport top.
+    const THRESHOLD = 10; // px above viewport top to count as "previous"
     let previous = null;
-
     for (const target of targets) {
-      if (target.top < threshold) previous = target;
-      else break;
+      // Re-read live position at decision time.
+      const vTop = target.element.getBoundingClientRect().top;
+      if (vTop < -THRESHOLD) previous = target.element;
     }
 
-    if (previous) {
-      scrollToBubbleTop(previous.top);
-    } else {
-      scrollToBubbleTop(0);
-    }
+    const dest = previous || targets[0].element;
+    log.debug('jump-up scrollIntoView el=%s', dest.className);
+    const behavior = getScrollBehavior();
+    dest.scrollIntoView({ behavior, block: 'start' });
   }
 
   function navigateToNextBubble() {
     const targets = getSortedBubbleTargets();
+    log.debug('jump-down click targets=%d', targets.length);
+
     if (targets.length === 0) {
-      log.warn('navigateToNextBubble: no targets found, using viewport fallback');
-      scrollByViewport(1);
+      log.warn('jump-down: no toggle buttons found');
       return;
     }
 
-    const currentY = window.scrollY;
-    const threshold = currentY + JUMP_NAV.topThreshold;
-    const next = targets.find((target) => target.top > threshold);
+    // Find the first bubble whose top is meaningfully below the viewport top.
+    const THRESHOLD = 10; // px below viewport top to count as "next"
+    const next = targets.find((target) => {
+      return target.element.getBoundingClientRect().top > THRESHOLD;
+    });
 
-    if (next) {
-      scrollToBubbleTop(next.top);
+    if (!next) {
+      log.debug('jump-down: already at last target');
       return;
     }
 
-    // At the end of known targets, continue stepping down so button still has effect.
-    scrollByViewport(1);
+    log.debug('jump-down scrollIntoView el=%s', next.element.className);
+    const behavior = getScrollBehavior();
+    next.element.scrollIntoView({ behavior, block: 'start' });
   }
 
   function updateJumpNavigatorPosition() {
