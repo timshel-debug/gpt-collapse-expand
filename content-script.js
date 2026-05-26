@@ -257,6 +257,28 @@ window.__CGCC_LOADED__ = true;
     return CONFIG.jumpScrollBehavior === 'instant' ? 'auto' : 'smooth';
   }
 
+  function logJumpNavigatorDiagnostics(direction, targets, selectedTarget) {
+    if (!debugEnabled) return;
+
+    const selectedClassName = selectedTarget && selectedTarget.element && selectedTarget.element.className
+      ? selectedTarget.element.className
+      : 'none';
+    const selectedTop = selectedTarget && typeof selectedTarget.viewportTop === 'number'
+      ? Math.round(selectedTarget.viewportTop)
+      : 'none';
+
+    log.debug(
+      'jump navigator diagnostics loaded=%s enabled=%s appended=%s direction=%s targets=%d selectedTop=%s selectedClass=%s',
+      window.__CGCC_LOADED__,
+      CONFIG.jumpNavEnabled,
+      !!(jumpNavContainer && document.contains(jumpNavContainer)),
+      direction,
+      targets.length,
+      selectedTop,
+      selectedClassName,
+    );
+  }
+
   function scrollToPosition(scroller, top, behavior) {
     const safeTop = Math.max(0, Math.round(top));
     if (isDocumentScroller(scroller)) {
@@ -399,7 +421,7 @@ window.__CGCC_LOADED__ = true;
     return best || document.scrollingElement || document.documentElement;
   }
 
-  function getSortedBubbleTargets() {
+  function getJumpBubbleTargets() {
     const buttons = Array.from(document.querySelectorAll('.cgcc-toggle-btn'));
     const seen = new Set();
     const targets = [];
@@ -408,11 +430,15 @@ window.__CGCC_LOADED__ = true;
       const bubble = btn.parentElement;
       if (!bubble || !document.contains(bubble) || seen.has(bubble)) continue;
       seen.add(bubble);
-      targets.push({ element: bubble, viewportTop: bubble.getBoundingClientRect().top });
+      targets.push({
+        button: btn,
+        element: bubble,
+        viewportTop: bubble.getBoundingClientRect().top,
+      });
     }
 
     targets.sort((a, b) => a.viewportTop - b.viewportTop);
-    log.debug('getSortedBubbleTargets: %d targets', targets.length);
+    log.debug('getJumpBubbleTargets: %d targets', targets.length);
     return targets;
   }
 
@@ -437,12 +463,29 @@ window.__CGCC_LOADED__ = true;
     jumpNavContainer = null;
   }
 
-  function navigateToPreviousBubble() {
-    const targets = getSortedBubbleTargets();
-    log.debug('jump-up click targets=%d', targets.length);
+  async function refreshJumpTargetsOnce() {
+    try {
+      await detectAndProcessBubbles();
+    } catch (err) {
+      log.error('jump navigator recovery failed', err);
+      return [];
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return getJumpBubbleTargets();
+  }
+
+  async function navigateToPreviousBubble() {
+    let targets = getJumpBubbleTargets();
+    logJumpNavigatorDiagnostics('previous', targets, null);
+
+    if (targets.length === 0) {
+      targets = await refreshJumpTargetsOnce();
+    }
 
     if (targets.length === 0) {
       log.warn('jump-up: no toggle buttons found');
+      logJumpNavigatorDiagnostics('previous', targets, null);
       return;
     }
 
@@ -455,30 +498,37 @@ window.__CGCC_LOADED__ = true;
       dest = targets[0].element;
     }
 
-    log.debug('jump-up scrollIntoView el=%s', dest.className);
     const behavior = getScrollBehavior();
+    const selectedTarget = targets.find((target) => target.element === dest) || null;
+    logJumpNavigatorDiagnostics('previous', targets, selectedTarget);
     dest.scrollIntoView({ behavior, block: 'start' });
   }
 
-  function navigateToNextBubble() {
-    const targets = getSortedBubbleTargets();
-    log.debug('jump-down click targets=%d', targets.length);
+  async function navigateToNextBubble() {
+    let targets = getJumpBubbleTargets();
+    logJumpNavigatorDiagnostics('next', targets, null);
+
+    if (targets.length === 0) {
+      targets = await refreshJumpTargetsOnce();
+    }
 
     if (targets.length === 0) {
       log.warn('jump-down: no toggle buttons found');
+      logJumpNavigatorDiagnostics('next', targets, null);
       return;
     }
 
-    const next = targets.find((target) => target.viewportTop > 10)?.element;
+    const nextTarget = targets.find((target) => target.viewportTop > 10) || null;
 
-    if (!next) {
+    if (!nextTarget) {
       log.debug('jump-down: already at last target');
+      logJumpNavigatorDiagnostics('next', targets, null);
       return;
     }
 
-    log.debug('jump-down scrollIntoView el=%s', next.className);
     const behavior = getScrollBehavior();
-    next.scrollIntoView({ behavior, block: 'start' });
+    logJumpNavigatorDiagnostics('next', targets, nextTarget);
+    nextTarget.element.scrollIntoView({ behavior, block: 'start' });
   }
 
   function updateJumpNavigatorPosition() {
@@ -503,12 +553,14 @@ window.__CGCC_LOADED__ = true;
   }
 
   function ensureJumpNavigator() {
-    if (!CONFIG.jumpNavEnabled) {
+    if (CONFIG.jumpNavEnabled === false) {
       removeJumpNavigator();
+      logJumpNavigatorDiagnostics('nav-state', getJumpBubbleTargets(), null);
       return;
     }
 
     if (jumpNavContainer && document.contains(jumpNavContainer)) {
+      logJumpNavigatorDiagnostics('nav-state', getJumpBubbleTargets(), null);
       return;
     }
 
@@ -554,6 +606,7 @@ window.__CGCC_LOADED__ = true;
     }
 
     updateJumpNavigatorPosition();
+    logJumpNavigatorDiagnostics('nav-state', getJumpBubbleTargets(), null);
   }
 
   // Detect conversation root

@@ -8,7 +8,11 @@
       const bubble = btn.parentElement;
       if (!bubble || !doc.contains(bubble) || seen.has(bubble)) continue;
       seen.add(bubble);
-      targets.push({ element: bubble, viewportTop: bubble.getBoundingClientRect().top });
+      targets.push({
+        button: btn,
+        element: bubble,
+        viewportTop: bubble.getBoundingClientRect().top,
+      });
     }
 
     targets.sort((a, b) => a.viewportTop - b.viewportTop);

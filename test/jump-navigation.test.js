@@ -43,6 +43,21 @@ test('getJumpBubbleTargets uses injected toggle buttons and preserves bubble ord
 
   assert.deepEqual(targets.map((target) => target.element.label), ['second', 'first', 'third']);
   assert.deepEqual(targets.map((target) => target.viewportTop), [80, 240, 480]);
+  assert.equal(targets[0].button.parentElement.label, 'second');
+});
+
+test('getJumpBubbleTargets returns an empty list when there are no collapse buttons', () => {
+  const doc = {
+    querySelectorAll(selector) {
+      assert.equal(selector, '.cgcc-toggle-btn');
+      return [];
+    },
+    contains() {
+      return false;
+    },
+  };
+
+  assert.deepEqual(getJumpBubbleTargets(doc), []);
 });
 
 test('selectPreviousJumpTarget returns the last bubble above the viewport', () => {
@@ -96,6 +111,17 @@ test('selectNextJumpTarget returns null when every bubble is already above the t
 test('manifest loads only content-script.js at runtime', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
   assert.deepEqual(manifest.content_scripts[0].js, ['content-script.js']);
+  assert.equal(manifest.content_scripts[0].js.includes('jump-navigation.js'), false);
+});
+
+test('content script owns the jump helper and recovery path', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'content-script.js'), 'utf8');
+  assert.ok(source.includes('function getJumpBubbleTargets()'), 'runtime jump helper missing');
+  assert.ok(source.includes('async function refreshJumpTargetsOnce()'), 'recovery helper missing');
+  assert.ok(source.includes("CONFIG.jumpNavEnabled === false"), 'strict false hide/show contract missing');
+  assert.ok(source.includes("logJumpNavigatorDiagnostics('nav-state'"), 'navigator diagnostics missing');
+  assert.ok(source.includes("logJumpNavigatorDiagnostics('previous'"), 'previous diagnostics missing');
+  assert.ok(source.includes("logJumpNavigatorDiagnostics('next'"), 'next diagnostics missing');
 });
 
 test('init fails open and creates the navigator before bubble processing', () => {
