@@ -57,6 +57,7 @@ window.__CGCC_LOADED__ = true;
   let urlCheckInterval  = null;
   let jumpNavContainer  = null;
   let jumpNavListenersAttached = false;
+  const jumpNavigation = globalThis.CGCCJumpNavigation || {};
 
   const JUMP_NAV = {
     verticalOffset: 90,
@@ -385,25 +386,10 @@ window.__CGCC_LOADED__ = true;
     return best || document.scrollingElement || document.documentElement;
   }
 
-  // Returns bubble parent elements in visual top-to-bottom order,
-  // using the injected .cgcc-toggle-btn buttons as reliable anchors.
   function getSortedBubbleTargets() {
-    const buttons = Array.from(document.querySelectorAll('.cgcc-toggle-btn'));
-    const seen = new Set();
-    const targets = [];
-
-    for (const btn of buttons) {
-      const bubble = btn.parentElement;
-      if (!bubble || !document.contains(bubble) || seen.has(bubble)) continue;
-      seen.add(bubble);
-      // viewportTop: top of the bubble relative to viewport at this moment.
-      // We store the element and recompute viewportTop at scroll time so it
-      // is always current (avoids stale values from before scroll).
-      targets.push({ element: bubble, viewportTop: bubble.getBoundingClientRect().top });
-    }
-
-    // DOM order is already top-to-bottom; sort by viewportTop to be safe.
-    targets.sort((a, b) => a.viewportTop - b.viewportTop);
+    const targets = jumpNavigation.getJumpBubbleTargets
+      ? jumpNavigation.getJumpBubbleTargets(document)
+      : [];
     log.debug('getSortedBubbleTargets: %d targets', targets.length);
     return targets;
   }
@@ -438,16 +424,9 @@ window.__CGCC_LOADED__ = true;
       return;
     }
 
-    // Find the last bubble whose top is meaningfully above the viewport top.
-    const THRESHOLD = 10; // px above viewport top to count as "previous"
-    let previous = null;
-    for (const target of targets) {
-      // Re-read live position at decision time.
-      const vTop = target.element.getBoundingClientRect().top;
-      if (vTop < -THRESHOLD) previous = target.element;
-    }
-
-    const dest = previous || targets[0].element;
+    const dest = jumpNavigation.selectPreviousJumpTarget
+      ? jumpNavigation.selectPreviousJumpTarget(targets, 10)
+      : targets[0].element;
     log.debug('jump-up scrollIntoView el=%s', dest.className);
     const behavior = getScrollBehavior();
     dest.scrollIntoView({ behavior, block: 'start' });
@@ -462,20 +441,18 @@ window.__CGCC_LOADED__ = true;
       return;
     }
 
-    // Find the first bubble whose top is meaningfully below the viewport top.
-    const THRESHOLD = 10; // px below viewport top to count as "next"
-    const next = targets.find((target) => {
-      return target.element.getBoundingClientRect().top > THRESHOLD;
-    });
+    const next = jumpNavigation.selectNextJumpTarget
+      ? jumpNavigation.selectNextJumpTarget(targets, 10)
+      : targets.find((target) => target.element.getBoundingClientRect().top > 10)?.element;
 
     if (!next) {
       log.debug('jump-down: already at last target');
       return;
     }
 
-    log.debug('jump-down scrollIntoView el=%s', next.element.className);
+    log.debug('jump-down scrollIntoView el=%s', next.className);
     const behavior = getScrollBehavior();
-    next.element.scrollIntoView({ behavior, block: 'start' });
+    next.scrollIntoView({ behavior, block: 'start' });
   }
 
   function updateJumpNavigatorPosition() {

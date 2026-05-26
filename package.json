@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "addons-linter": "^10.1.0"
+  }
+}
