@@ -57,7 +57,6 @@ window.__CGCC_LOADED__ = true;
   let urlCheckInterval  = null;
   let jumpNavContainer  = null;
   let jumpNavListenersAttached = false;
-  const jumpNavigation = globalThis.CGCCJumpNavigation || {};
 
   const JUMP_NAV = {
     verticalOffset: 90,
@@ -168,8 +167,16 @@ window.__CGCC_LOADED__ = true;
   // Initialize
   async function init() {
     await loadSettings();
-    const convState = await loadConversationState();
-    await detectAndProcessBubbles(convState);
+    ensureJumpNavigator();
+
+    let convState = null;
+    try {
+      convState = await loadConversationState();
+      await detectAndProcessBubbles(convState);
+    } catch (err) {
+      log.error('initial bubble processing failed', err);
+    }
+
     ensureJumpNavigator();
     setupMutationObserver();
     setupMessageListener();
@@ -212,8 +219,14 @@ window.__CGCC_LOADED__ = true;
     userExplicitStates.clear();
     processingLock    = false;
     processingPending = false;
-    const convState = await loadConversationState();
-    await detectAndProcessBubbles(convState);
+    ensureJumpNavigator();
+    let convState = null;
+    try {
+      convState = await loadConversationState();
+      await detectAndProcessBubbles(convState);
+    } catch (err) {
+      log.error('navigation bubble processing failed', err);
+    }
     ensureJumpNavigator();
     updateJumpNavigatorPosition();
     setupMutationObserver(); // re-attach to potentially new root
@@ -387,9 +400,18 @@ window.__CGCC_LOADED__ = true;
   }
 
   function getSortedBubbleTargets() {
-    const targets = jumpNavigation.getJumpBubbleTargets
-      ? jumpNavigation.getJumpBubbleTargets(document)
-      : [];
+    const buttons = Array.from(document.querySelectorAll('.cgcc-toggle-btn'));
+    const seen = new Set();
+    const targets = [];
+
+    for (const btn of buttons) {
+      const bubble = btn.parentElement;
+      if (!bubble || !document.contains(bubble) || seen.has(bubble)) continue;
+      seen.add(bubble);
+      targets.push({ element: bubble, viewportTop: bubble.getBoundingClientRect().top });
+    }
+
+    targets.sort((a, b) => a.viewportTop - b.viewportTop);
     log.debug('getSortedBubbleTargets: %d targets', targets.length);
     return targets;
   }
@@ -424,9 +446,15 @@ window.__CGCC_LOADED__ = true;
       return;
     }
 
-    const dest = jumpNavigation.selectPreviousJumpTarget
-      ? jumpNavigation.selectPreviousJumpTarget(targets, 10)
-      : targets[0].element;
+    let dest = null;
+    for (const target of targets) {
+      if (target.viewportTop < -10) dest = target.element;
+    }
+
+    if (!dest) {
+      dest = targets[0].element;
+    }
+
     log.debug('jump-up scrollIntoView el=%s', dest.className);
     const behavior = getScrollBehavior();
     dest.scrollIntoView({ behavior, block: 'start' });
@@ -441,9 +469,7 @@ window.__CGCC_LOADED__ = true;
       return;
     }
 
-    const next = jumpNavigation.selectNextJumpTarget
-      ? jumpNavigation.selectNextJumpTarget(targets, 10)
-      : targets.find((target) => target.element.getBoundingClientRect().top > 10)?.element;
+    const next = targets.find((target) => target.viewportTop > 10)?.element;
 
     if (!next) {
       log.debug('jump-down: already at last target');

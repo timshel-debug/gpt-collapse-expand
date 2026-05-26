@@ -1,11 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   getJumpBubbleTargets,
   selectPreviousJumpTarget,
   selectNextJumpTarget,
 } = require('../jump-navigation');
+
+const repoRoot = path.resolve(__dirname, '..');
 
 function makeBubble(top, label) {
   return {
@@ -87,4 +91,30 @@ test('selectNextJumpTarget returns null when every bubble is already above the t
   ];
 
   assert.equal(selectNextJumpTarget(targets), null);
+});
+
+test('manifest loads only content-script.js at runtime', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.content_scripts[0].js, ['content-script.js']);
+});
+
+test('init fails open and creates the navigator before bubble processing', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'content-script.js'), 'utf8');
+  const initStart = source.indexOf('async function init() {');
+  const initEnd = source.indexOf('// Setup navigation detection (SPA routing)');
+  assert.ok(initStart >= 0, 'init function not found');
+  assert.ok(initEnd > initStart, 'init function end marker not found');
+
+  const initBlock = source.slice(initStart, initEnd);
+  const loadSettingsIndex = initBlock.indexOf('await loadSettings();');
+  const ensureNavigatorIndex = initBlock.indexOf('ensureJumpNavigator();');
+  const detectIndex = initBlock.indexOf('await detectAndProcessBubbles(convState);');
+  const tryIndex = initBlock.indexOf('try {');
+  const catchIndex = initBlock.indexOf("log.error('initial bubble processing failed', err);");
+
+  assert.ok(loadSettingsIndex >= 0, 'loadSettings call missing from init');
+  assert.ok(ensureNavigatorIndex > loadSettingsIndex, 'navigator is not created after loadSettings');
+  assert.ok(detectIndex > ensureNavigatorIndex, 'bubble processing starts before navigator creation');
+  assert.ok(tryIndex > ensureNavigatorIndex, 'init is not wrapped in a fail-open try block');
+  assert.ok(catchIndex > detectIndex, 'initial bubble processing failure is not logged');
 });
