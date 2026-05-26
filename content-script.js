@@ -2,6 +2,13 @@
 // Handles DOM detection, bubble manipulation, and state management
 
 window.__CGCC_LOADED__ = true;
+try {
+  if (window.wrappedJSObject) {
+    window.wrappedJSObject.__CGCC_LOADED__ = true;
+  }
+} catch (err) {
+  // Best effort only; page-context visibility is for proof, not behavior.
+}
 
 (function () {
   'use strict';
